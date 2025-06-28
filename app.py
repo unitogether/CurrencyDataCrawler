@@ -121,41 +121,63 @@ def process_exchange_data(df, selected_currencies):
         usd_data = df_filtered[df_filtered['SOURCE_CURRENCY'] == 'USD'][['DATE', 'RATE_VS_ILS']].copy()
         usd_data.columns = ['DATE', 'USD_RATE']
         
-        for _, row in df_filtered.iterrows():
-            date = row['DATE']
-            source_currency = row['SOURCE_CURRENCY']
-            rate_vs_ils = row['RATE_VS_ILS']
+        # Get unique dates for processing
+        unique_dates = df_filtered['DATE'].unique()
+        
+        for date in unique_dates:
+            date_data = df_filtered[df_filtered['DATE'] == date]
             
-            # Add row for ILS as base currency
+            # Add ILS/ILS = 1.0 row
             result_rows.append({
                 'Effective_Date': date,
                 'Base_Currency': 'ILS',
-                'Source_Currency': source_currency,
-                'Exchange_Rate': rate_vs_ils
+                'Source_Currency': 'ILS',
+                'Exchange_Rate': 1.0
             })
             
-            # Add row for USD as base currency (if USD data exists for this date)
+            # Add USD/USD = 1.0 row (if USD is in selected currencies)
             if 'USD' in selected_currencies:
-                usd_rate_row = usd_data[usd_data['DATE'] == date]
-                if not usd_rate_row.empty:
-                    usd_rate = usd_rate_row['USD_RATE'].iloc[0]
-                    
-                    if source_currency == 'USD':
-                        # USD to USD is 1
-                        rate_vs_usd = 1.0
-                    else:
-                        # Calculate rate vs USD: (Source/ILS) / (USD/ILS)
-                        rate_vs_usd = rate_vs_ils / usd_rate
-                    
+                result_rows.append({
+                    'Effective_Date': date,
+                    'Base_Currency': 'USD',
+                    'Source_Currency': 'USD',
+                    'Exchange_Rate': 1.0
+                })
+            
+            # Process each currency for this date
+            for _, row in date_data.iterrows():
+                source_currency = row['SOURCE_CURRENCY']
+                rate_vs_ils = row['RATE_VS_ILS']
+                
+                # Add row for ILS as base currency (skip if ILS/ILS already added)
+                if source_currency != 'ILS':
                     result_rows.append({
                         'Effective_Date': date,
-                        'Base_Currency': 'USD',
+                        'Base_Currency': 'ILS',
                         'Source_Currency': source_currency,
-                        'Exchange_Rate': rate_vs_usd
+                        'Exchange_Rate': rate_vs_ils
                     })
+                
+                # Add row for USD as base currency (if USD data exists for this date)
+                if 'USD' in selected_currencies and source_currency != 'USD':
+                    usd_rate_row = usd_data[usd_data['DATE'] == date]
+                    if not usd_rate_row.empty:
+                        usd_rate = usd_rate_row['USD_RATE'].iloc[0]
+                        # Calculate rate vs USD: (Source/ILS) / (USD/ILS)
+                        rate_vs_usd = rate_vs_ils / usd_rate
+                        
+                        result_rows.append({
+                            'Effective_Date': date,
+                            'Base_Currency': 'USD',
+                            'Source_Currency': source_currency,
+                            'Exchange_Rate': rate_vs_usd
+                        })
         
         # Create final dataframe
         result_df = pd.DataFrame(result_rows)
+        
+        # Format the date as DD/MM/YYYY
+        result_df['Effective_Date'] = pd.to_datetime(result_df['Effective_Date']).dt.strftime('%d/%m/%Y')
         
         # Sort by date, base currency, then source currency
         result_df = result_df.sort_values(['Effective_Date', 'Base_Currency', 'Source_Currency'])
@@ -176,9 +198,10 @@ def display_current_rates(df, selected_currencies):
             st.warning("אין נתונים להצגה")
             return
             
-        # Get latest date
-        latest_date = df['Effective_Date'].max()
-        latest_data = df[df['Effective_Date'] == latest_date]
+        # Convert date strings back to datetime for comparison
+        df['Date_for_sorting'] = pd.to_datetime(df['Effective_Date'], format='%d/%m/%Y')
+        latest_date = df['Date_for_sorting'].max()
+        latest_data = df[df['Date_for_sorting'] == latest_date]
         
         # Get ILS rates
         ils_rates = latest_data[latest_data['Base_Currency'] == 'ILS']
@@ -275,7 +298,7 @@ else:
                     
                     with col3:
                         try:
-                            date_range = pd.to_datetime(df_processed['Effective_Date'], errors='coerce')
+                            date_range = pd.to_datetime(df_processed['Effective_Date'], format='%d/%m/%Y', errors='coerce')
                             days_range = (date_range.max() - date_range.min()).days + 1
                             st.metric("טווח ימים", days_range)
                         except:

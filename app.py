@@ -172,6 +172,21 @@ def process_exchange_data(df, selected_currencies):
                             'Source_Currency': source_currency,
                             'Exchange_Rate': rate_vs_usd
                         })
+            
+            # Add USD/ILS row (if USD is in selected currencies)
+            if 'USD' in selected_currencies:
+                usd_rate_row = usd_data[usd_data['DATE'] == date]
+                if not usd_rate_row.empty:
+                    usd_rate = usd_rate_row['USD_RATE'].iloc[0]
+                    # For USD/ILS, the rate is 1/USD_rate (inverse)
+                    usd_to_ils_rate = 1.0 / usd_rate
+                    
+                    result_rows.append({
+                        'Effective_Date': date,
+                        'Base_Currency': 'USD',
+                        'Source_Currency': 'ILS',
+                        'Exchange_Rate': usd_to_ils_rate
+                    })
         
         # Create final dataframe
         result_df = pd.DataFrame(result_rows)

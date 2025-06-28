@@ -18,8 +18,18 @@ st.markdown("---")
 # Sidebar for filters
 st.sidebar.header("🔧 הגדרות סינון")
 
-# Currency selection with mapping to SDMX codes
-st.sidebar.subheader("בחירת מטבעות")
+# Base Currency selection
+st.sidebar.subheader("בחירת Base Currency")
+available_base_currencies = ["ILS", "USD"]
+selected_base_currencies = st.sidebar.multiselect(
+    "בחר Base Currency:",
+    available_base_currencies,
+    default=["ILS", "USD"],
+    help="בחר את המטבעות הבסיסיים"
+)
+
+# Source Currency selection with mapping to SDMX codes
+st.sidebar.subheader("בחירת Source Currency")
 currency_mapping = {
     "USD": "RER_USD_ILS",
     "EUR": "RER_EUR_ILS", 
@@ -35,7 +45,7 @@ currency_mapping = {
 
 available_currencies = list(currency_mapping.keys())
 selected_currencies = st.sidebar.multiselect(
-    "בחר מטבעות:",
+    "בחר מטבעות מקור:",
     available_currencies,
     default=["USD", "EUR", "GBP"],
     help="בחר את המטבעות שברצונך לכלול בקובץ"
@@ -94,7 +104,7 @@ def fetch_exchange_rates(selected_currencies, start_date, end_date):
     except Exception as e:
         return None, f"שגיאה בעיבוד הנתונים: {str(e)}"
 
-def process_exchange_data(df, selected_currencies):
+def process_exchange_data(df, selected_currencies, selected_base_currencies):
     """
     Process the exchange rates data from SDMX API to create Base/Source currency structure
     """
@@ -124,69 +134,67 @@ def process_exchange_data(df, selected_currencies):
         # Get unique dates for processing
         unique_dates = df_filtered['DATE'].unique()
         
+        # Create all source currencies list (including ILS)
+        all_source_currencies = list(set(selected_currencies + ['ILS']))
+        
         for date in unique_dates:
             date_data = df_filtered[df_filtered['DATE'] == date]
             
-            # Add ILS/ILS = 1.0 row
-            result_rows.append({
-                'Effective_Date': date,
-                'Base_Currency': 'ILS',
-                'Source_Currency': 'ILS',
-                'Exchange_Rate': 1.0
-            })
-            
-            # Add USD/USD = 1.0 row (if USD is in selected currencies)
-            if 'USD' in selected_currencies:
+            # Process for each selected base currency
+            for base_currency in selected_base_currencies:
+                
+                # Add base/base = 1.0 row (ILS/ILS or USD/USD)
                 result_rows.append({
                     'Effective_Date': date,
-                    'Base_Currency': 'USD',
-                    'Source_Currency': 'USD',
+                    'Base_Currency': base_currency,
+                    'Source_Currency': base_currency,
                     'Exchange_Rate': 1.0
                 })
-            
-            # Process each currency for this date
-            for _, row in date_data.iterrows():
-                source_currency = row['SOURCE_CURRENCY']
-                rate_vs_ils = row['RATE_VS_ILS']
                 
-                # Add row for ILS as base currency (skip if ILS/ILS already added)
-                if source_currency != 'ILS':
-                    result_rows.append({
-                        'Effective_Date': date,
-                        'Base_Currency': 'ILS',
-                        'Source_Currency': source_currency,
-                        'Exchange_Rate': rate_vs_ils
-                    })
-                
-                # Add row for USD as base currency (if USD data exists for this date)
-                if 'USD' in selected_currencies and source_currency != 'USD':
-                    usd_rate_row = usd_data[usd_data['DATE'] == date]
-                    if not usd_rate_row.empty:
-                        usd_rate = usd_rate_row['USD_RATE'].iloc[0]
-                        # Calculate rate vs USD: (Source/ILS) / (USD/ILS)
-                        rate_vs_usd = rate_vs_ils / usd_rate
+                # Process each source currency for this base currency
+                for source_currency in all_source_currencies:
+                    if source_currency != base_currency:
                         
-                        result_rows.append({
-                            'Effective_Date': date,
-                            'Base_Currency': 'USD',
-                            'Source_Currency': source_currency,
-                            'Exchange_Rate': rate_vs_usd
-                        })
-            
-            # Add USD/ILS row (if USD is in selected currencies)
-            if 'USD' in selected_currencies:
-                usd_rate_row = usd_data[usd_data['DATE'] == date]
-                if not usd_rate_row.empty:
-                    usd_rate = usd_rate_row['USD_RATE'].iloc[0]
-                    # For USD/ILS, the rate is 1/USD_rate (inverse)
-                    usd_to_ils_rate = 1.0 / usd_rate
-                    
-                    result_rows.append({
-                        'Effective_Date': date,
-                        'Base_Currency': 'USD',
-                        'Source_Currency': 'ILS',
-                        'Exchange_Rate': usd_to_ils_rate
-                    })
+                        if base_currency == 'ILS':
+                            # For ILS base currency
+                            if source_currency in selected_currencies:
+                                # Find the rate for this source currency
+                                source_data = date_data[date_data['SOURCE_CURRENCY'] == source_currency]
+                                if not source_data.empty:
+                                    rate = source_data['RATE_VS_ILS'].iloc[0]
+                                    result_rows.append({
+                                        'Effective_Date': date,
+                                        'Base_Currency': 'ILS',
+                                        'Source_Currency': source_currency,
+                                        'Exchange_Rate': rate
+                                    })
+                        
+                        elif base_currency == 'USD' and 'USD' in selected_currencies:
+                            # For USD base currency
+                            usd_rate_row = usd_data[usd_data['DATE'] == date]
+                            if not usd_rate_row.empty:
+                                usd_rate = usd_rate_row['USD_RATE'].iloc[0]
+                                
+                                if source_currency == 'ILS':
+                                    # USD/ILS rate (inverse of USD rate)
+                                    rate = 1.0 / usd_rate
+                                elif source_currency in selected_currencies:
+                                    # Other currencies vs USD
+                                    source_data = date_data[date_data['SOURCE_CURRENCY'] == source_currency]
+                                    if not source_data.empty:
+                                        source_rate = source_data['RATE_VS_ILS'].iloc[0]
+                                        rate = source_rate / usd_rate
+                                    else:
+                                        continue
+                                else:
+                                    continue
+                                
+                                result_rows.append({
+                                    'Effective_Date': date,
+                                    'Base_Currency': 'USD',
+                                    'Source_Currency': source_currency,
+                                    'Exchange_Rate': rate
+                                })
         
         # Create final dataframe
         result_df = pd.DataFrame(result_rows)
@@ -194,8 +202,14 @@ def process_exchange_data(df, selected_currencies):
         # Format the date as DD/MM/YYYY
         result_df['Effective_Date'] = pd.to_datetime(result_df['Effective_Date']).dt.strftime('%d/%m/%Y')
         
+        # Convert date back to datetime for proper sorting
+        result_df['Date_for_sorting'] = pd.to_datetime(result_df['Effective_Date'], format='%d/%m/%Y')
+        
         # Sort by date, base currency, then source currency
-        result_df = result_df.sort_values(['Effective_Date', 'Base_Currency', 'Source_Currency'])
+        result_df = result_df.sort_values(['Date_for_sorting', 'Base_Currency', 'Source_Currency'])
+        
+        # Drop the sorting column
+        result_df = result_df.drop('Date_for_sorting', axis=1)
         
         return result_df, None
     
@@ -245,7 +259,9 @@ def display_current_rates(df, selected_currencies):
 
 # Main application logic
 if not selected_currencies:
-    st.warning("⚠️ אנא בחר לפחות מטבע אחד")
+    st.warning("⚠️ אנא בחר לפחות מטבע מקור אחד")
+elif not selected_base_currencies:
+    st.warning("⚠️ אנא בחר לפחות מטבע בסיס אחד")
 elif start_date > end_date:
     st.error("❌ תאריך התחלה חייב להיות לפני תאריך הסיום")
 else:
@@ -267,7 +283,7 @@ else:
                 
                 # Process the data
                 with st.spinner("מעבד ומסנן נתונים..."):
-                    df_processed, process_error = process_exchange_data(df_raw, selected_currencies)
+                    df_processed, process_error = process_exchange_data(df_raw, selected_currencies, selected_base_currencies)
                 
                 if process_error:
                     st.error(f"❌ {process_error}")

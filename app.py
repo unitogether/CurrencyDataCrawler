@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-from io import BytesIO
 from datetime import datetime, timedelta
 import os
 
@@ -19,9 +18,22 @@ st.markdown("---")
 # Sidebar for filters
 st.sidebar.header("🔧 הגדרות סינון")
 
-# Currency selection
+# Currency selection with mapping to SDMX codes
 st.sidebar.subheader("בחירת מטבעות")
-available_currencies = ["USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD", "NOK", "SEK", "DKK"]
+currency_mapping = {
+    "USD": "RER_USD_ILS",
+    "EUR": "RER_EUR_ILS", 
+    "GBP": "RER_GBP_ILS",
+    "CHF": "RER_CHF_ILS",
+    "JPY": "RER_JPY_ILS",
+    "CAD": "RER_CAD_ILS",
+    "AUD": "RER_AUD_ILS",
+    "NOK": "RER_NOK_ILS",
+    "SEK": "RER_SEK_ILS",
+    "DKK": "RER_DKK_ILS"
+}
+
+available_currencies = list(currency_mapping.keys())
 selected_currencies = st.sidebar.multiselect(
     "בחר מטבעות:",
     available_currencies,
@@ -31,53 +43,49 @@ selected_currencies = st.sidebar.multiselect(
 
 # Date range selection
 st.sidebar.subheader("טווח תאריכים")
-date_option = st.sidebar.radio(
-    "בחר טווח תאריכים:",
-    ["נתונים יומיים עדכניים", "טווח תאריכים מותאם אישית"],
-    help="בחר אם להוריד נתונים יומיים או טווח תאריכים מסוים"
-)
-
-start_date = None
-end_date = None
-
-if date_option == "טווח תאריכים מותאם אישית":
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "מתאריך:",
-            datetime.now() - timedelta(days=30),
-            help="תאריך התחלה"
-        )
-    with col2:
-        end_date = st.date_input(
-            "עד תאריך:",
-            datetime.now(),
-            help="תאריך סיום"
-        )
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    start_date = st.date_input(
+        "מתאריך:",
+        datetime.now() - timedelta(days=30),
+        help="תאריך התחלה"
+    )
+with col2:
+    end_date = st.date_input(
+        "עד תאריך:",
+        datetime.now(),
+        help="תאריך סיום"
+    )
 
 # Download button
 download_button = st.sidebar.button("📥 הורד נתונים", type="primary", use_container_width=True)
 
 # Main content area
-def fetch_exchange_rates(rate_type="Daily", start_date=None, end_date=None):
+def fetch_exchange_rates(selected_currencies, start_date, end_date):
     """
-    Fetch exchange rates from Bank of Israel API
+    Fetch exchange rates from Bank of Israel SDMX API
     """
     try:
-        # Construct URL based on parameters
-        if rate_type == "Daily":
-            url = "https://www.boi.org.il/currency-api/ExRatesDownload?type=Daily"
-        else:
-            # For historical data, we might need to adjust the URL format
-            url = "https://www.boi.org.il/currency-api/ExRatesDownload?type=Historical"
+        # Build currency codes for the API
+        currency_codes = [currency_mapping[curr] for curr in selected_currencies]
+        currencies_str = ",".join(currency_codes)
+        
+        # Format dates for the API
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+        
+        # Construct the SDMX API URL
+        base_url = "https://edge.boi.org.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI.STATISTICS/EXR/1.0"
+        url = f"{base_url}/{currencies_str}?format=csv&startperiod={start_str}&endperiod={end_str}&c%5BDATA_TYPE%5D=OF00"
         
         # Make the request
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         
-        # Read Excel data
-        excel_data = BytesIO(response.content)
-        df = pd.read_excel(excel_data)
+        # Read CSV data directly
+        from io import StringIO
+        csv_data = StringIO(response.text)
+        df = pd.read_csv(csv_data)
         
         return df, None
     
@@ -86,170 +94,126 @@ def fetch_exchange_rates(rate_type="Daily", start_date=None, end_date=None):
     except Exception as e:
         return None, f"שגיאה בעיבוד הנתונים: {str(e)}"
 
-def filter_and_process_data(df, selected_currencies, start_date=None, end_date=None):
+def process_exchange_data(df, selected_currencies):
     """
-    Filter and process the exchange rates data
+    Process the exchange rates data from SDMX API
     """
     try:
-        # Try different possible column names for currency
-        currency_column = None
-        possible_currency_columns = ['שם_מטבע', 'מטבע', 'Currency', 'CurrencyCode']
+        if df.empty:
+            return None, "לא התקבלו נתונים"
         
-        for col in possible_currency_columns:
-            if col in df.columns:
-                currency_column = col
-                break
+        # The SDMX API returns data with specific column structure
+        # TIME_PERIOD, OBS_VALUE, BASE_CURRENCY, COUNTER_CURRENCY, SERIES_CODE
         
-        if currency_column is None:
-            # If no standard column found, try to identify by content
-            for col in df.columns:
-                if df[col].dtype == 'object' and any(curr in df[col].astype(str).values for curr in ['USD', 'EUR', 'GBP']):
-                    currency_column = col
-                    break
+        # Convert TIME_PERIOD to datetime
+        df['DATE'] = pd.to_datetime(df['TIME_PERIOD'])
         
-        if currency_column is None:
-            return None, "לא נמצא עמודת מטבע בנתונים"
+        # Extract currency from SERIES_CODE (e.g., RER_USD_ILS -> USD)
+        df['CURRENCY'] = df['SERIES_CODE'].str.extract(r'RER_([A-Z]{3})_ILS')
         
-        # Filter by selected currencies
-        df_filtered = df[df[currency_column].isin(selected_currencies)]
+        # Rename OBS_VALUE to RATE for clarity
+        df['RATE'] = pd.to_numeric(df['OBS_VALUE'], errors='coerce')
         
-        # Try to find date column
-        date_column = None
-        possible_date_columns = ['תאריך', 'Date', 'date', 'DATE']
+        # Filter for selected currencies
+        df_filtered = df[df['CURRENCY'].isin(selected_currencies)].copy()
         
-        for col in possible_date_columns:
-            if col in df.columns:
-                date_column = col
-                break
+        # Sort by date and currency
+        df_filtered = df_filtered.sort_values(['DATE', 'CURRENCY'])
         
-        if date_column and start_date and end_date:
-            # Convert date column to datetime if it's not already
-            df_filtered[date_column] = pd.to_datetime(df_filtered[date_column], errors='coerce')
-            
-            # Filter by date range
-            start_datetime = pd.to_datetime(start_date)
-            end_datetime = pd.to_datetime(end_date)
-            
-            df_filtered = df_filtered[
-                (df_filtered[date_column] >= start_datetime) & 
-                (df_filtered[date_column] <= end_datetime)
-            ]
+        # Create a clean dataframe with only the needed columns
+        clean_df = df_filtered[['DATE', 'CURRENCY', 'RATE']].copy()
         
-        # Sort by date and currency if possible
-        if date_column:
-            df_filtered = df_filtered.sort_values(by=[date_column, currency_column])
-        else:
-            df_filtered = df_filtered.sort_values(by=[currency_column])
+        # Rename columns to Hebrew
+        clean_df.columns = ['תאריך', 'מטבע', 'שער_חליפין']
         
-        return df_filtered, None
+        return clean_df, None
     
     except Exception as e:
-        return None, f"שגיאה בסינון הנתונים: {str(e)}"
+        return None, f"שגיאה בעיבוד הנתונים: {str(e)}"
 
-def display_current_rates(df):
+def display_current_rates(df, selected_currencies):
     """
     Display current exchange rates in a nice format
     """
     st.subheader("📊 שערי חליפין נוכחיים")
     
     try:
-        # Try to find the rate column
-        rate_column = None
-        possible_rate_columns = ['שער', 'Rate', 'ExchangeRate', 'שער_חליפין']
-        
-        for col in possible_rate_columns:
-            if col in df.columns:
-                rate_column = col
-                break
-        
-        if rate_column is None:
-            # Look for numeric columns that might be rates
-            numeric_columns = df.select_dtypes(include=['float64', 'int64']).columns
-            if len(numeric_columns) > 0:
-                rate_column = numeric_columns[0]
-        
-        if rate_column:
-            # Get latest rates for each currency
-            currency_column = None
-            for col in ['שם_מטבע', 'מטבע', 'Currency', 'CurrencyCode']:
-                if col in df.columns:
-                    currency_column = col
-                    break
+        if df.empty:
+            st.warning("אין נתונים להצגה")
+            return
             
-            if currency_column:
-                latest_rates = df.groupby(currency_column)[rate_column].last().reset_index()
-                
-                # Display in columns
-                cols = st.columns(len(selected_currencies))
-                for i, currency in enumerate(selected_currencies):
-                    if i < len(cols):
-                        with cols[i]:
-                            rate_data = latest_rates[latest_rates[currency_column] == currency]
-                            if not rate_data.empty:
-                                rate = rate_data[rate_column].iloc[0]
-                                st.metric(
-                                    label=f"{currency}/ILS",
-                                    value=f"{rate:.4f}",
-                                    help=f"שער חליפין עדכני עבור {currency}"
-                                )
-                            else:
-                                st.metric(
-                                    label=f"{currency}/ILS",
-                                    value="לא זמין",
-                                    help=f"נתונים לא זמינים עבור {currency}"
-                                )
+        # Get latest rates for each currency
+        latest_rates = df.groupby('מטבע')['שער_חליפין'].last().reset_index()
+        
+        # Display in columns
+        cols = st.columns(len(selected_currencies))
+        for i, currency in enumerate(selected_currencies):
+            if i < len(cols):
+                with cols[i]:
+                    rate_data = latest_rates[latest_rates['מטבע'] == currency]
+                    if not rate_data.empty:
+                        rate = rate_data['שער_חליפין'].iloc[0]
+                        st.metric(
+                            label=f"{currency}/ILS",
+                            value=f"{rate:.4f}",
+                            help=f"שער חליפין עדכני עבור {currency}"
+                        )
+                    else:
+                        st.metric(
+                            label=f"{currency}/ILS",
+                            value="לא זמין",
+                            help=f"נתונים לא זמינים עבור {currency}"
+                        )
     except Exception as e:
         st.error(f"שגיאה בהצגת השערים הנוכחיים: {str(e)}")
 
 # Main application logic
 if not selected_currencies:
     st.warning("⚠️ אנא בחר לפחות מטבע אחד")
+elif start_date > end_date:
+    st.error("❌ תאריך התחלה חייב להיות לפני תאריך הסיום")
 else:
     # Display instructions
-    st.info("💡 בחר מטבעות ופרמטרים בסרגל הצד, ולאחר מכן לחץ על 'הורד נתונים'")
+    st.info("💡 בחר מטבעות ותאריכים בסרגל הצד, ולאחר מכן לחץ על 'הורד נתונים'")
     
     # Handle download button click
     if download_button:
         with st.spinner("מוריד נתונים מבנק ישראל..."):
-            # Determine rate type based on date selection
-            rate_type = "Daily" if date_option == "נתונים יומיים עדכניים" else "Historical"
-            
-            # Fetch data
-            df, error = fetch_exchange_rates(rate_type, start_date, end_date)
+            # Fetch data using the new SDMX API
+            df_raw, error = fetch_exchange_rates(selected_currencies, start_date, end_date)
             
             if error:
                 st.error(f"❌ {error}")
-            elif df is None or df.empty:
+            elif df_raw is None or df_raw.empty:
                 st.error("❌ לא התקבלו נתונים מבנק ישראל")
             else:
                 st.success("✅ נתונים הורדו בהצלחה!")
                 
-                # Display current rates
-                display_current_rates(df)
-                
-                # Filter and process data
+                # Process the data
                 with st.spinner("מעבד ומסנן נתונים..."):
-                    df_filtered, filter_error = filter_and_process_data(
-                        df, selected_currencies, start_date, end_date
-                    )
+                    df_processed, process_error = process_exchange_data(df_raw, selected_currencies)
                 
-                if filter_error:
-                    st.error(f"❌ {filter_error}")
-                elif df_filtered is None or df_filtered.empty:
+                if process_error:
+                    st.error(f"❌ {process_error}")
+                elif df_processed is None or df_processed.empty:
                     st.warning("⚠️ לא נמצאו נתונים המתאימים לקריטריונים שנבחרו")
                 else:
-                    st.success(f"✅ נמצאו {len(df_filtered)} רשומות")
+                    st.success(f"✅ נמצאו {len(df_processed)} רשומות")
+                    
+                    # Display current rates
+                    display_current_rates(df_processed, selected_currencies)
                     
                     # Display data preview
                     st.subheader("👀 תצוגה מקדימה של הנתונים")
-                    st.dataframe(df_filtered.head(10), use_container_width=True)
+                    st.dataframe(df_processed.head(10), use_container_width=True)
                     
                     # Prepare CSV for download
-                    csv_data = df_filtered.to_csv(index=False, encoding='utf-8-sig')
+                    csv_data = df_processed.to_csv(index=False, encoding='utf-8-sig')
                     
                     # Create filename
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"exchange_rates_{timestamp}.csv"
+                    currencies_str = "_".join(selected_currencies)
+                    filename = f"exchange_rates_{currencies_str}_{timestamp}.csv"
                     
                     # Download button
                     st.download_button(
@@ -266,21 +230,17 @@ else:
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.metric("מספר רשומות", len(df_filtered))
+                        st.metric("מספר רשומות", len(df_processed))
                     
                     with col2:
                         st.metric("מטבעות נבחרים", len(selected_currencies))
                     
                     with col3:
-                        if 'תאריך' in df_filtered.columns or 'Date' in df_filtered.columns:
-                            date_col = 'תאריך' if 'תאריך' in df_filtered.columns else 'Date'
-                            try:
-                                date_range = pd.to_datetime(df_filtered[date_col], errors='coerce')
-                                days_range = (date_range.max() - date_range.min()).days + 1
-                                st.metric("טווח ימים", days_range)
-                            except:
-                                st.metric("טווח ימים", "לא זמין")
-                        else:
+                        try:
+                            date_range = pd.to_datetime(df_processed['תאריך'], errors='coerce')
+                            days_range = (date_range.max() - date_range.min()).days + 1
+                            st.metric("טווח ימים", days_range)
+                        except:
                             st.metric("טווח ימים", "לא זמין")
 
 # Footer
@@ -296,8 +256,4 @@ st.markdown(
 
 # Display available columns for debugging (only in development)
 if st.sidebar.checkbox("🔍 הצג מידע טכני (לפיתוח)", value=False):
-    if 'df' in locals() and df is not None:
-        st.sidebar.subheader("עמודות זמינות בנתונים:")
-        st.sidebar.write(list(df.columns))
-        st.sidebar.subheader("דוגמת נתונים:")
-        st.sidebar.write(df.head(2))
+    st.sidebar.markdown("**מידע טכני יוצג לאחר הורדת נתונים**")

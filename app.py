@@ -96,58 +96,71 @@ def fetch_exchange_rates(selected_currencies, start_date, end_date):
 
 def process_exchange_data(df, selected_currencies):
     """
-    Process the exchange rates data from SDMX API
+    Process the exchange rates data from SDMX API to create Base/Source currency structure
     """
     try:
         if df.empty:
             return None, "לא התקבלו נתונים"
         
-        # The SDMX API returns data with specific column structure
-        # TIME_PERIOD, OBS_VALUE, BASE_CURRENCY, COUNTER_CURRENCY, SERIES_CODE
-        
         # Convert TIME_PERIOD to datetime
         df['DATE'] = pd.to_datetime(df['TIME_PERIOD'])
         
         # Extract currency from SERIES_CODE (e.g., RER_USD_ILS -> USD)
-        df['CURRENCY'] = df['SERIES_CODE'].str.extract(r'RER_([A-Z]{3})_ILS')
+        df['SOURCE_CURRENCY'] = df['SERIES_CODE'].str.extract(r'RER_([A-Z]{3})_ILS')
         
         # Rename OBS_VALUE to RATE for clarity
-        df['RATE'] = pd.to_numeric(df['OBS_VALUE'], errors='coerce')
+        df['RATE_VS_ILS'] = pd.to_numeric(df['OBS_VALUE'], errors='coerce')
         
         # Filter for selected currencies
-        df_filtered = df[df['CURRENCY'].isin(selected_currencies)].copy()
+        df_filtered = df[df['SOURCE_CURRENCY'].isin(selected_currencies)].copy()
         
-        # Sort by date and currency
-        df_filtered = df_filtered.sort_values(['DATE', 'CURRENCY'])
+        # Create the final structured dataframe
+        result_rows = []
         
-        # Create a clean dataframe with only the needed columns
-        clean_df = df_filtered[['DATE', 'CURRENCY', 'RATE']].copy()
+        # Get USD rates for calculation
+        usd_data = df_filtered[df_filtered['SOURCE_CURRENCY'] == 'USD'][['DATE', 'RATE_VS_ILS']].copy()
+        usd_data.columns = ['DATE', 'USD_RATE']
         
-        # Keep columns in English
-        clean_df.columns = ['Date', 'Currency', 'Rate_vs_ILS']
+        for _, row in df_filtered.iterrows():
+            date = row['DATE']
+            source_currency = row['SOURCE_CURRENCY']
+            rate_vs_ils = row['RATE_VS_ILS']
+            
+            # Add row for ILS as base currency
+            result_rows.append({
+                'Effective_Date': date,
+                'Base_Currency': 'ILS',
+                'Source_Currency': source_currency,
+                'Exchange_Rate': rate_vs_ils
+            })
+            
+            # Add row for USD as base currency (if USD data exists for this date)
+            if 'USD' in selected_currencies:
+                usd_rate_row = usd_data[usd_data['DATE'] == date]
+                if not usd_rate_row.empty:
+                    usd_rate = usd_rate_row['USD_RATE'].iloc[0]
+                    
+                    if source_currency == 'USD':
+                        # USD to USD is 1
+                        rate_vs_usd = 1.0
+                    else:
+                        # Calculate rate vs USD: (Source/ILS) / (USD/ILS)
+                        rate_vs_usd = rate_vs_ils / usd_rate
+                    
+                    result_rows.append({
+                        'Effective_Date': date,
+                        'Base_Currency': 'USD',
+                        'Source_Currency': source_currency,
+                        'Exchange_Rate': rate_vs_usd
+                    })
         
-        # Calculate USD rates if USD is available and other currencies are selected
-        if 'USD' in selected_currencies and len(selected_currencies) > 1:
-            # Get USD rates for each date
-            usd_rates = clean_df[clean_df['Currency'] == 'USD'][['Date', 'Rate_vs_ILS']].copy()
-            usd_rates.columns = ['Date', 'USD_Rate']
-            
-            # Merge USD rates with all data
-            clean_df = clean_df.merge(usd_rates, on='Date', how='left')
-            
-            # Calculate rate vs USD (Rate_vs_ILS / USD_Rate)
-            clean_df['Rate_vs_USD'] = clean_df['Rate_vs_ILS'] / clean_df['USD_Rate']
-            
-            # For USD itself, set Rate_vs_USD to 1
-            clean_df.loc[clean_df['Currency'] == 'USD', 'Rate_vs_USD'] = 1.0
-            
-            # Drop the intermediate USD_Rate column
-            clean_df = clean_df.drop('USD_Rate', axis=1)
-            
-            # Reorder columns
-            clean_df = clean_df[['Date', 'Currency', 'Rate_vs_ILS', 'Rate_vs_USD']]
+        # Create final dataframe
+        result_df = pd.DataFrame(result_rows)
         
-        return clean_df, None
+        # Sort by date, base currency, then source currency
+        result_df = result_df.sort_values(['Effective_Date', 'Base_Currency', 'Source_Currency'])
+        
+        return result_df, None
     
     except Exception as e:
         return None, f"שגיאה בעיבוד הנתונים: {str(e)}"
@@ -163,17 +176,21 @@ def display_current_rates(df, selected_currencies):
             st.warning("אין נתונים להצגה")
             return
             
-        # Get latest rates for each currency
-        latest_rates = df.groupby('Currency')['Rate_vs_ILS'].last().reset_index()
+        # Get latest date
+        latest_date = df['Effective_Date'].max()
+        latest_data = df[df['Effective_Date'] == latest_date]
+        
+        # Get ILS rates
+        ils_rates = latest_data[latest_data['Base_Currency'] == 'ILS']
         
         # Display in columns
         cols = st.columns(len(selected_currencies))
         for i, currency in enumerate(selected_currencies):
             if i < len(cols):
                 with cols[i]:
-                    rate_data = latest_rates[latest_rates['Currency'] == currency]
+                    rate_data = ils_rates[ils_rates['Source_Currency'] == currency]
                     if not rate_data.empty:
-                        rate = rate_data['Rate_vs_ILS'].iloc[0]
+                        rate = rate_data['Exchange_Rate'].iloc[0]
                         st.metric(
                             label=f"{currency}/ILS",
                             value=f"{rate:.4f}",
@@ -258,7 +275,7 @@ else:
                     
                     with col3:
                         try:
-                            date_range = pd.to_datetime(df_processed['Date'], errors='coerce')
+                            date_range = pd.to_datetime(df_processed['Effective_Date'], errors='coerce')
                             days_range = (date_range.max() - date_range.min()).days + 1
                             st.metric("טווח ימים", days_range)
                         except:

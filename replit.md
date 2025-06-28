@@ -83,7 +83,15 @@ This is a Streamlit web application for downloading and displaying currency exch
 
 Preferred communication style: Simple, everyday language.
 
+## Recent Changes
+
+- June 28, 2025: Updated to use Bank of Israel SDMX API for reliable CSV data
+- June 28, 2025: Restructured data format with Base_Currency and Source_Currency columns
+- June 28, 2025: Added support for both ILS and USD as base currencies
+- June 28, 2025: Implemented proper date formatting (DD/MM/YYYY) and sorting
+- June 28, 2025: Added Base Currency selection with ILS and USD defaults
+
 ## Changelog
 
-Changelog:
-- June 28, 2025. Initial setup
+- June 28, 2025: Initial setup
+- June 28, 2025: Enhanced with SDMX API integration and improved data structure

@@ -228,9 +228,8 @@ def display_current_rates(df, selected_currencies):
             return
             
         # Convert date strings back to datetime for comparison
-        df['Date_for_sorting'] = pd.to_datetime(df['Effective_Date'], format='%d/%m/%Y')
-        latest_date = df['Date_for_sorting'].max()
-        latest_data = df[df['Date_for_sorting'] == latest_date]
+        latest_date = pd.to_datetime(df['Effective_Date'], format='%d/%m/%Y').max()
+        latest_data = df[pd.to_datetime(df['Effective_Date'], format='%d/%m/%Y') == latest_date]
         
         # Get ILS rates
         ils_rates = latest_data[latest_data['Base_Currency'] == 'ILS']

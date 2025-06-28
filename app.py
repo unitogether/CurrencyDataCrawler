@@ -123,8 +123,29 @@ def process_exchange_data(df, selected_currencies):
         # Create a clean dataframe with only the needed columns
         clean_df = df_filtered[['DATE', 'CURRENCY', 'RATE']].copy()
         
-        # Rename columns to Hebrew
-        clean_df.columns = ['תאריך', 'מטבע', 'שער_חליפין']
+        # Keep columns in English
+        clean_df.columns = ['Date', 'Currency', 'Rate_vs_ILS']
+        
+        # Calculate USD rates if USD is available and other currencies are selected
+        if 'USD' in selected_currencies and len(selected_currencies) > 1:
+            # Get USD rates for each date
+            usd_rates = clean_df[clean_df['Currency'] == 'USD'][['Date', 'Rate_vs_ILS']].copy()
+            usd_rates.columns = ['Date', 'USD_Rate']
+            
+            # Merge USD rates with all data
+            clean_df = clean_df.merge(usd_rates, on='Date', how='left')
+            
+            # Calculate rate vs USD (Rate_vs_ILS / USD_Rate)
+            clean_df['Rate_vs_USD'] = clean_df['Rate_vs_ILS'] / clean_df['USD_Rate']
+            
+            # For USD itself, set Rate_vs_USD to 1
+            clean_df.loc[clean_df['Currency'] == 'USD', 'Rate_vs_USD'] = 1.0
+            
+            # Drop the intermediate USD_Rate column
+            clean_df = clean_df.drop('USD_Rate', axis=1)
+            
+            # Reorder columns
+            clean_df = clean_df[['Date', 'Currency', 'Rate_vs_ILS', 'Rate_vs_USD']]
         
         return clean_df, None
     
@@ -143,16 +164,16 @@ def display_current_rates(df, selected_currencies):
             return
             
         # Get latest rates for each currency
-        latest_rates = df.groupby('מטבע')['שער_חליפין'].last().reset_index()
+        latest_rates = df.groupby('Currency')['Rate_vs_ILS'].last().reset_index()
         
         # Display in columns
         cols = st.columns(len(selected_currencies))
         for i, currency in enumerate(selected_currencies):
             if i < len(cols):
                 with cols[i]:
-                    rate_data = latest_rates[latest_rates['מטבע'] == currency]
+                    rate_data = latest_rates[latest_rates['Currency'] == currency]
                     if not rate_data.empty:
-                        rate = rate_data['שער_חליפין'].iloc[0]
+                        rate = rate_data['Rate_vs_ILS'].iloc[0]
                         st.metric(
                             label=f"{currency}/ILS",
                             value=f"{rate:.4f}",
@@ -237,7 +258,7 @@ else:
                     
                     with col3:
                         try:
-                            date_range = pd.to_datetime(df_processed['תאריך'], errors='coerce')
+                            date_range = pd.to_datetime(df_processed['Date'], errors='coerce')
                             days_range = (date_range.max() - date_range.min()).days + 1
                             st.metric("טווח ימים", days_range)
                         except:

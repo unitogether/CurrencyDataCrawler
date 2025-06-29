@@ -339,7 +339,8 @@ st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: #666; font-size: 0.8em;'>
-    נתונים מתקבלים מבנק ישראל | Bank of Israel Exchange Rates
+    נתונים מתקבלים מבנק ישראל | Bank of Israel Exchange Rates<br>
+    © כל הזכויות שמורות ל Avichay Shani, 2025
     </div>
     """,
     unsafe_allow_html=True
